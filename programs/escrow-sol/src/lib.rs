@@ -1,6 +1,10 @@
 #![allow(clippy::result_large_err)]
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::clock::Clock;
+use anchor_spl::{
+    associated_token::AssociatedToken,
+    token::{transfer, Mint, Token, TokenAccount, Transfer},
+};
 declare_id!("qbuMdeYxYJXBjU6C6qFKjZKjXmrU83eDQomHdrch826");
 
 #[program]
@@ -201,21 +205,142 @@ pub mod test {
         Ok(())
     }
 
-    //todo: recover_sol_funds after deadline
+    pub fn recover_sol_funds(ctx: Context<RecoverSolanaContext>) -> Result<()> {
+        let now = Clock::get()?.unix_timestamp;
+        let escrow = &mut ctx.accounts.escrow;
+        if now <= escrow.judge_deadline {
+            return Err(error!(ErrorCode::RecoverTooEarly));
+        }
+        let escrow_info = &escrow.to_account_info();
+        let payer_info = &mut ctx.accounts.payer.to_account_info();
+        let rent = Rent::get()?;
+        let rent_exemption = rent.minimum_balance(escrow_info.data_len());
+        let remaining_lamports = escrow_info.lamports();
+        let amount = remaining_lamports - rent_exemption;
+        **escrow_info.try_borrow_mut_lamports()? -= amount;
+        **payer_info.try_borrow_mut_lamports()? += amount;
+        Ok(())
+    }
+
+    pub fn judge_token_escrow(ctx: Context<JudgeTokenContext>, decision: bool) -> Result<()> {
+        let config = &ctx.accounts.config;
+        let escrow = &ctx.accounts.escrow;
+        let treasury_token_account = &mut ctx.accounts.treasury_token_account;
+        let payer_token_account = &mut ctx.accounts.payer_token_account;
+        let payee_token_account = &mut ctx.accounts.payee_token_account;
+        let escrow_token_account = &mut ctx.accounts.escrow_token_account;
+        if let Some(_token_mint_pubkey) = escrow.token_mint {
+            // calculate fee
+            let mut init_amount = escrow.amount;
+            // convert to decimals
+            init_amount *= 10u64.pow(ctx.accounts.mint_account.decimals as u32);
+            let fee = (init_amount * (config.fee as u64)) / 10000;
+            let amount = init_amount - fee;
+            transfer(
+                CpiContext::new(
+                    ctx.accounts.token_program.to_account_info(),
+                    Transfer {
+                         from: escrow_token_account.to_account_info(),
+                         to: treasury_token_account.to_account_info(),
+                         authority: escrow.to_account_info()
+                    },
+                ),
+                fee,
+            )?;
+            // handle decision
+            if decision {
+                transfer(
+                    CpiContext::new(
+                        ctx.accounts.token_program.to_account_info(),
+                        Transfer {
+                            from: escrow_token_account.to_account_info(),
+                            to: payee_token_account.to_account_info(),
+                            authority: escrow.to_account_info(),
+                        },
+                    ),
+                    amount,
+                )?;
+            } else {
+                transfer(
+                    CpiContext::new(
+                        ctx.accounts.token_program.to_account_info(),
+                        Transfer {
+                            from: escrow_token_account.to_account_info(),
+                            to: payer_token_account.to_account_info(),
+                            authority: escrow.to_account_info(),
+                        },
+                    ),
+                    amount,
+                )?;
+            }
+        } else {
+            return Err(error!(ErrorCode::EscrowNotToken))
+        };
+        Ok(())
+    }
+
+    pub fn deposit_token_funds(ctx: Context<DepositTokenContext>) -> Result<()> {
+        let escrow = &mut ctx.accounts.escrow;
+        if let Some(_token_mint_pubkey) = escrow.token_mint {
+            let payer = &mut ctx.accounts.payer;
+            let payer_token_account = &ctx.accounts.payer_token_account;
+            let escrow_token_account = &ctx.accounts.escrow_token_account;
+            transfer(
+                CpiContext::new(
+                    ctx.accounts.token_program.to_account_info(),
+                    Transfer {
+                        from: payer_token_account.to_account_info(),
+                        to: escrow_token_account.to_account_info(),
+                        authority: payer.to_account_info(),
+                    },
+                ),
+                escrow.amount * 10u64.pow(ctx.accounts.mint_account.decimals as u32), // Transfer amount, adjust for decimals
+            )?;
+        } else {
+            return Err(error!(ErrorCode::EscrowNotToken))
+        }
+        Ok(())
+    }
+
+    pub fn recover_token_funds(ctx: Context<RecoverTokenContext>) -> Result<()> {
+        let now = Clock::get()?.unix_timestamp;
+        let escrow = &mut ctx.accounts.escrow;
+        if now <= escrow.judge_deadline {
+            return Err(error!(ErrorCode::RecoverTooEarly));
+        }
+        if let Some(_token_mint_pubkey) = escrow.token_mint {
+            let payer_token_account = &ctx.accounts.payer_token_account;
+            let escrow_token_account = &ctx.accounts.escrow_token_account;
+            transfer(
+                CpiContext::new(
+                    ctx.accounts.token_program.to_account_info(),
+                    Transfer {
+                        from: escrow_token_account.to_account_info(),
+                        to: payer_token_account.to_account_info(),
+                        authority: escrow.to_account_info(),
+                    },
+                ),
+                escrow.amount * 10u64.pow(ctx.accounts.mint_account.decimals as u32), // Transfer amount, adjust for decimals
+            )?;
+        }
+        Ok(())
+    }
 }
 
-// ============================================================================================================== //
-//          -                 Account Contexts                                                                    //
-//         -:                  _______  _______  _______ _________     _______ _________          _______         //
-//         ::      --         (  ___  )(  ____ \(  ____ \\__   __/    (  ____ \\__   __/|\     /|(  ____ \        //
-//  ::::  :.:::::::-          | (   ) || (    \/| (    \/   ) (       | (    \/   ) (   ( \   / )| (    \/        //
-//    :::::.:.::-             | (___) || |      | |         | |       | |         | |    \ (_) / | (_____         //
-//      ::.::::..:            |  ___  || |      | |         | |       | |         | |     ) _ (  (_____  )        //
-//      :::.::.:::::          | (   ) || |      | |         | |       | |         | |    / ( ) \       ) |        //
-//   -:::::: ::   ----        | )   ( || (____/\| (____/\   | |       | (____/\   | |   ( /   \ )/\____) |        //
-//   -       ::               |/     \|(_______/(_______/   )_(       (_______/   )_(   |/     \|\_______)        //
-//           :                                                                                                    //
-// ============================================================================================================== //                                                               
+//  ========================================================================================================  //
+//  Account Contexts                                                                                          //
+//    ▄████████  ▄████████  ▄████████     ███           ▄████████     ███     ▀████    ▐████▀    ▄████████    //
+//    ███    ███ ███    ███ ███    ███ ▀█████████▄      ███    ███ ▀█████████▄   ███▌   ████▀    ███    ███   //
+//    ███    ███ ███    █▀  ███    █▀     ▀███▀▀██      ███    █▀     ▀███▀▀██    ███  ▐███      ███    █▀    //
+//    ███    ███ ███        ███            ███   ▀      ███            ███   ▀    ▀███▄███▀      ███          //
+//  ▀███████████ ███        ███            ███          ███            ███        ████▀██▄     ▀███████████   //
+//    ███    ███ ███    █▄  ███    █▄      ███          ███    █▄      ███       ▐███  ▀███             ███   //
+//    ███    ███ ███    ███ ███    ███     ███          ███    ███     ███      ▄███     ███▄     ▄█    ███   //
+//    ███    █▀  ████████▀  ████████▀     ▄████▀        ████████▀     ▄████▀   ████       ███▄  ▄████████▀    //
+//  ========================================================================================================  //                                                               
+
+
+                                                                                                      
 
 #[derive(Accounts)]
 pub struct Initialize<'info> {
@@ -324,9 +449,112 @@ pub struct DepositSolanaContext<'info> {
     pub config: Account<'info, ConfigAccount>,
 
     #[account(
+        mut,
         seeds = [b"escrow", payer.key().as_ref()],
         bump = escrow.bump,
         constraint = !escrow.token_mint.is_some() @ ErrorCode::EscrowNotSolana,
+    )]
+    pub escrow: Account<'info, EscrowAccount>,
+
+    pub system_program: Program<'info, System>
+}
+
+#[derive(Accounts)]
+pub struct DepositTokenContext<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+
+    #[account(
+        seeds = [b"config"],
+        bump = config.bump,
+    )]
+    pub config: Account<'info, ConfigAccount>,
+
+    #[account(
+        mut,
+        seeds = [b"escrow", payer.key().as_ref()],
+        bump = escrow.bump,
+        constraint = escrow.token_mint.is_some() @ ErrorCode::EscrowNotToken,
+    )]
+    pub escrow: Account<'info, EscrowAccount>,
+
+    #[account(
+        mut,
+        constraint = escrow.token_mint == Some(mint_account.key()) @ ErrorCode::WrongToken,
+    )]
+    pub mint_account: Account<'info, Mint>,
+
+    #[account(
+        mut,
+        constraint = payer_token_account.mint == mint_account.key(),
+        constraint = payer_token_account.owner == payer.key(),
+    )]
+    pub payer_token_account: Account<'info, TokenAccount>,
+
+    #[account(
+        init_if_needed,
+        payer = payer,
+        associated_token::mint = mint_account,
+        associated_token::authority = escrow,
+    )]
+    pub escrow_token_account: Account<'info, TokenAccount>,
+
+    pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+    pub system_program: Program<'info, System>
+}
+
+#[derive(Accounts)]
+pub struct RecoverTokenContext<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [b"escrow", payer.key().as_ref()],
+        bump = escrow.bump,
+        constraint = escrow.token_mint.is_some() @ ErrorCode::EscrowNotToken,
+    )]
+    pub escrow: Account<'info, EscrowAccount>,
+
+    #[account(
+        mut,
+        constraint = escrow.token_mint == Some(mint_account.key()) @ ErrorCode::WrongToken,
+    )]
+    pub mint_account: Account<'info, Mint>,
+
+    #[account(
+        mut,
+        constraint = payer_token_account.mint == mint_account.key(),
+        constraint = payer_token_account.owner == payer.key(),
+    )]
+    pub payer_token_account: Account<'info, TokenAccount>,
+
+    #[account(
+        init_if_needed,
+        payer = payer,
+        associated_token::mint = mint_account,
+        associated_token::authority = escrow,
+    )]
+    pub escrow_token_account: Account<'info, TokenAccount>,
+
+    pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+    pub system_program: Program<'info, System>
+}
+
+#[derive(Accounts)]
+pub struct RecoverSolanaContext<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [b"escrow", payer.key().as_ref()],
+        bump = escrow.bump,
+        constraint = !escrow.token_mint.is_some() @ ErrorCode::EscrowNotSolana,
+        constraint = escrow.payer == payer.key() @ ErrorCode::NotPayerRecovering,
+        close = payer,
     )]
     pub escrow: Account<'info, EscrowAccount>,
 
@@ -440,18 +668,95 @@ pub struct JudgeSolanaContext<'info> {
 
     pub system_program: Program<'info, System>
 }
-// ============================================================================================================================== //
-//          -                 Function Argument Definitions                                                                       //
-//         -:                  _______  _______  _______    _______ _________ _______           _______ _________ _______         //
-//         ::      --         (  ___  )(  ____ )(  ____ \  (  ____ \\__   __/(  ____ )|\     /|(  ____ \\__   __/(  ____ \        //
-//  ::::  :.:::::::-          | (   ) || (    )|| (    \/  | (    \/   ) (   | (    )|| )   ( || (    \/   ) (   | (    \/        //
-//    :::::.:.::-             | (___) || (____)|| |        | (_____    | |   | (____)|| |   | || |         | |   | (_____         //
-//      ::.::::..:            |  ___  ||     __)| | ____   (_____  )   | |   |     __)| |   | || |         | |   (_____  )        //
-//      :::.::.:::::          | (   ) || (\ (   | | \_  )        ) |   | |   | (\ (   | |   | || |         | |         ) |        //
-//   -:::::: ::   ----        | )   ( || ) \ \__| (___) |  /\____) |   | |   | ) \ \__| (___) || (____/\   | |   /\____) |        //
-//   -       ::               |/     \||/   \__/(_______)  \_______)   )_(   |/   \__/(_______)(_______/   )_(   \_______)        //
-//           :                                                                                                                    //
-// ============================================================================================================================== //
+
+#[derive(Accounts)]
+pub struct JudgeTokenContext<'info> {
+    #[account(mut)]
+    pub judge: Signer<'info>,
+
+    /// CHECK: This is payee pubkey
+    #[account(mut)]
+    pub payee: AccountInfo<'info>,
+
+    /// CHECK: This is payee pubkey
+    #[account(mut)]
+    pub payer: AccountInfo<'info>,
+
+    /// CHECK: This is treasury pubkey
+    #[account(mut)]
+    pub treasury: AccountInfo<'info>,
+
+    #[account(
+        seeds = [b"config"],
+        bump = config.bump,
+        constraint = config.treasury == treasury.key() @ ErrorCode::UninvolvedUser,
+        constraint = config.judge == judge.key() @ ErrorCode::UninvolvedUser,
+    )]
+    pub config: Account<'info, ConfigAccount>,
+
+    #[account(
+        mut,
+        seeds = [b"escrow", escrow.payer.as_ref()],
+        bump = escrow.bump,
+        constraint = escrow.token_mint.is_some() @ ErrorCode::EscrowNotToken,
+        constraint = escrow.disputed @ ErrorCode::EscrowNotDisputed,
+        constraint = escrow.payee == payee.key() @ ErrorCode::UninvolvedUser,
+        constraint = escrow.payer == payer.key() @ ErrorCode::UninvolvedUser,
+        close = payer,
+    )]
+    pub escrow: Account<'info, EscrowAccount>,
+
+    #[account(
+        mut,
+        constraint = escrow.token_mint == Some(mint_account.key()) @ ErrorCode::WrongToken,
+    )]
+    pub mint_account: Account<'info, Mint>,
+
+    #[account(
+        mut,
+        constraint = payer_token_account.mint == mint_account.key(),
+        constraint = payer_token_account.owner == payer.key(),
+    )]
+    pub payer_token_account: Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        constraint = payee_token_account.mint == mint_account.key(),
+        constraint = payee_token_account.owner == payee.key(),
+    )]
+    pub payee_token_account: Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        constraint = treasury_token_account.mint == mint_account.key(),
+        constraint = treasury_token_account.owner == treasury.key(),
+    )]
+    pub treasury_token_account: Account<'info, TokenAccount>,
+
+    #[account(
+        init_if_needed,
+        payer = judge,
+        associated_token::mint = mint_account,
+        associated_token::authority = escrow,
+    )]
+    pub escrow_token_account: Account<'info, TokenAccount>,
+
+    pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+    pub system_program: Program<'info, System>
+}
+// ================================================================================================================================  //
+// Arg Structs - Function Argument Definitions                                                                                       //
+//   ▄████████    ▄████████    ▄██████▄          ▄████████     ███        ▄████████ ███    █▄   ▄████████     ███        ▄████████   // 
+//   ███    ███   ███    ███   ███    ███        ███    ███ ▀█████████▄   ███    ███ ███    ███ ███    ███ ▀█████████▄   ███    ███  // 
+//   ███    ███   ███    ███   ███    █▀         ███    █▀     ▀███▀▀██   ███    ███ ███    ███ ███    █▀     ▀███▀▀██   ███    █▀   // 
+//   ███    ███  ▄███▄▄▄▄██▀  ▄███               ███            ███   ▀  ▄███▄▄▄▄██▀ ███    ███ ███            ███   ▀   ███         // 
+// ▀███████████ ▀▀███▀▀▀▀▀   ▀▀███ ████▄       ▀███████████     ███     ▀▀███▀▀▀▀▀   ███    ███ ███            ███     ▀███████████  // 
+//   ███    ███ ▀███████████   ███    ███               ███     ███     ▀███████████ ███    ███ ███    █▄      ███              ███  // 
+//   ███    ███   ███    ███   ███    ███         ▄█    ███     ███       ███    ███ ███    ███ ███    ███     ███        ▄█    ███  // 
+//   ███    █▀    ███    ███   ████████▀        ▄████████▀     ▄████▀     ███    ███ ████████▀  ████████▀     ▄████▀    ▄████████▀   // 
+//                ███    ███                                              ███    ███                                                 // 
+// ================================================================================================================================  //
 
 #[derive(AnchorSerialize, AnchorDeserialize)]
 pub struct ConfigUpdateArgs {
@@ -470,18 +775,20 @@ pub struct EscrowCreationArgs {
     pub token_mint: Option<Pubkey>
 }
 
-// ============================================================================================================ //
-//          -                 Account Definitions                                                               //
-//         -:                  _______  _______  _______ _________   ______   _______  _______  _______         //
-//         ::      --         (  ___  )(  ____ \(  ____ \\__   __/  (  __  \ (  ____ \(  ____ \(  ____ \        //
-//  ::::  :.:::::::-          | (   ) || (    \/| (    \/   ) (     | (  \  )| (    \/| (    \/| (    \/        //
-//    :::::.:.::-             | (___) || |      | |         | |     | |   ) || (__    | (__    | (_____         //
-//      ::.::::..:            |  ___  || |      | |         | |     | |   | ||  __)   |  __)   (_____  )        //
-//      :::.::.:::::          | (   ) || |      | |         | |     | |   ) || (      | (            ) |        //
-//   -:::::: ::   ----        | )   ( || (____/\| (____/\   | |     | (__/  )| (____/\| )      /\____) |        //
-//   -       ::               |/     \|(_______/(_______/   )_(     (______/ (_______/|/       \_______)        //
-//           :                                                                                                  //
-// ============================================================================================================ //     
+// ========================================================================================================== //
+// Account Definitions                                                                                        //
+//   ▄████████  ▄████████  ▄████████     ███          ████████▄     ▄████████    ▄████████    ▄████████       //
+//   ███    ███ ███    ███ ███    ███ ▀█████████▄      ███   ▀███   ███    ███   ███    ███   ███    ███      //
+//   ███    ███ ███    █▀  ███    █▀     ▀███▀▀██      ███    ███   ███    █▀    ███    █▀    ███    █▀       //
+//   ███    ███ ███        ███            ███   ▀      ███    ███  ▄███▄▄▄      ▄███▄▄▄       ███             //
+// ▀███████████ ███        ███            ███          ███    ███ ▀▀███▀▀▀     ▀▀███▀▀▀     ▀███████████      //
+//   ███    ███ ███    █▄  ███    █▄      ███          ███    ███   ███    █▄    ███                 ███      //
+//   ███    ███ ███    ███ ███    ███     ███          ███   ▄███   ███    ███   ███           ▄█    ███      //
+//   ███    █▀  ████████▀  ████████▀     ▄████▀        ████████▀    ██████████   ███         ▄████████▀       //
+// ========================================================================================================== //     
+
+
+                                                                                                    
 
 #[account]
 #[derive(InitSpace)]
@@ -508,20 +815,18 @@ pub struct EscrowAccount {
     pub bump: u8,                   // Bump for PDA verification
 }
 
-// ======================================================================================== //
-//          -                 Events                                                        //
-//         -:                  _______           _______  _       _________ _______         //
-//         ::      --         (  ____ \|\     /|(  ____ \( (    /|\__   __/(  ____ \        //
-//  ::::  :.:::::::-          | (    \/| )   ( || (    \/|  \  ( |   ) (   | (    \/        //
-//    :::::.:.::-             | (__    | |   | || (__    |   \ | |   | |   | (_____         //
-//      ::.::::..:            |  __)   ( (   ) )|  __)   | (\ \) |   | |   (_____  )        //
-//      :::.::.:::::          | (       \ \_/ / | (      | | \   |   | |         ) |        //
-//   -:::::: ::   ----        | (____/\  \   /  | (____/\| )  \  |   | |   /\____) |        //
-//   -       ::               (_______/   \_/   (_______/|/    )_)   )_(   \_______)        //
-//           :                                                                              //
-// ======================================================================================== // 
+// ========================================================================= //
+// Events                                                                    //
+//   ▄████████   ▄█    █▄     ▄████████ ███▄▄▄▄       ███        ▄████████   //
+//   ███    ███ ███    ███   ███    ███ ███▀▀▀██▄ ▀█████████▄   ███    ███   //
+//   ███    █▀  ███    ███   ███    █▀  ███   ███    ▀███▀▀██   ███    █▀    //
+//  ▄███▄▄▄     ███    ███  ▄███▄▄▄     ███   ███     ███   ▀   ███          //
+// ▀▀███▀▀▀     ███    ███ ▀▀███▀▀▀     ███   ███     ███     ▀███████████   //
+//   ███    █▄  ███    ███   ███    █▄  ███   ███     ███              ███   //
+//   ███    ███ ███    ███   ███    ███ ███   ███     ███        ▄█    ███   //
+//   ██████████  ▀██████▀    ██████████  ▀█   █▀     ▄████▀    ▄████████▀    //
+// ========================================================================  // 
                                                       
-
 #[event]
 pub struct ConfigCreated {
     pub address: Pubkey,
@@ -567,6 +872,19 @@ pub struct EscrowCreated {
     pub timestamp: i64,        
 }
 
+//  ==========================================================================  //
+//  Error Codes / Errors                                                        //  
+//   ▄████████    ▄████████    ▄████████  ▄██████▄     ▄████████    ▄████████   //
+//   ███    ███   ███    ███   ███    ███ ███    ███   ███    ███   ███    ███  // 
+//   ███    █▀    ███    ███   ███    ███ ███    ███   ███    ███   ███    █▀   // 
+//  ▄███▄▄▄      ▄███▄▄▄▄██▀  ▄███▄▄▄▄██▀ ███    ███  ▄███▄▄▄▄██▀   ███         // 
+// ▀▀███▀▀▀     ▀▀███▀▀▀▀▀   ▀▀███▀▀▀▀▀   ███    ███ ▀▀███▀▀▀▀▀   ▀███████████  // 
+//   ███    █▄  ▀███████████ ▀███████████ ███    ███ ▀███████████          ███  // 
+//   ███    ███   ███    ███   ███    ███ ███    ███   ███    ███    ▄█    ███  // 
+//   ██████████   ███    ███   ███    ███  ▀██████▀    ███    ███  ▄████████▀   // 
+//                ███    ███   ███    ███              ███    ███               //  
+//  ==========================================================================  //
+
 #[error_code]
 pub enum ErrorCode {
     #[msg("Tax rate exceeds maximum of 2000 basis points (20%)")]
@@ -599,14 +917,26 @@ pub enum ErrorCode {
     #[msg("Signer is not current nominee")]
     UnauthorizedJudge,
 
+    #[msg("Operation Failed - Escrow not in recoverable state, wait for judge deadline to pass.")]
+    RecoverTooEarly,
+
     #[msg("Escrow creation failed - amount is too small")]
     InvalidEscrowAmount,
 
     #[msg("Operation failed - trying to perform SOL operations on Token escrow")]
     EscrowNotSolana,
 
+    #[msg("Operation failed - trying to perform Token operations on SOL escrow")]
+    EscrowNotToken,
+
+    #[msg("Operation failed - trying to use the wrong token")]
+    WrongToken,
+
     #[msg("Operation failed - trying to release funds from wrong Payer")]
     NotPayerReleasing,
+
+    #[msg("Operation failed - trying to recover funds when not Payer")]
+    NotPayerRecovering,
 
     #[msg("Operation failed - trying to return funds to wrong Payer")]
     NotPayerReturning,

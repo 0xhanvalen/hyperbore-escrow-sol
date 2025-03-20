@@ -66,12 +66,22 @@ pub fn return_sol_funds(ctx: Context<ReturnSolanaContext>) -> Result<()> {}
 The slightly less happy but still chill ending for a SOL escrow. The `Payee` (`escrow.payee`) realizes that, for whatever reason, they don't deserve to get paid, and voluntarily **return** the SOL to the `Payer`. The `Escrow` account is closed, HyperboreDAO collects some basis point fee from the total protected, and the `Payer` gets their rent back.
 
 ```rust
-// TODO: Deposit Tokens Function
+pub fn recover_sol_funds(ctx: Context<RecoverSolanaContext>) -> Result<()> {}
 ```
 
+The worst possible ending for a SOL escrow. Money was deposited, then everyone got hit by a bus and portal isekai'd to Hyperborea to enjoy their anime harem. Nobody ever clicked anything on the escrow for over a month. Future Archaelogists can recover funds from the Escrow by using the `Payer`'s account after the `judge_deadline` has past.
+
 ```rust
-// TODO: Judge Token Escrows
+pub fn deposit_token_funds(ctx: Context<DepositTokenContext>) -> Result<()> {}
 ```
+
+Same as `deposit_sol_funds` but cooler. Works with standard tokens like USDC or Fartcoin or whatever.
+
+```rust
+pub fn judge_token_escrow(ctx: Context<JudgeTokenContext>, decision: bool) -> Result<()> {}
+```
+
+Same as `judge_sol_escrow` but cooler. Works with standard tokens like USDC or Fartcoin or whatever.
 
 ```rust
 // TODO: Release Token Funds
@@ -80,6 +90,12 @@ The slightly less happy but still chill ending for a SOL escrow. The `Payee` (`e
 ```rust
 // TODO: Return Token funds
 ```
+
+```rust
+pub fn recover_token_funds(ctx: Context<RecoverSolanaContext>) -> Result<()> {}
+```
+
+The worst possible ending for a Token escrow. Money was deposited, then everyone got hit by a bus and portal isekai'd to Hyperborea to enjoy their anime harem. Nobody ever clicked anything on the escrow for over a month. Future Archaelogists can recover funds from the Escrow by using the `Payer`'s account after the `judge_deadline` has past.
 
 ## Events
 
