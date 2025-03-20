@@ -84,12 +84,16 @@ pub fn judge_token_escrow(ctx: Context<JudgeTokenContext>, decision: bool) -> Re
 Same as `judge_sol_escrow` but cooler. Works with standard tokens like USDC or Fartcoin or whatever.
 
 ```rust
-// TODO: Release Token Funds
+pub fn release_token_escrow(ctx: Context<ReleaseTokenContext>) -> Result<()> {}
 ```
 
+Like the sol version, this is the happy path.
+
 ```rust
-// TODO: Return Token funds
+pub fn return_token_escrow(ctx: Context<ReturnTokenContext>) -> Result<()> {}
 ```
+
+Slightly less happy path.
 
 ```rust
 pub fn recover_token_funds(ctx: Context<RecoverSolanaContext>) -> Result<()> {}
@@ -101,13 +105,142 @@ The worst possible ending for a Token escrow. Money was deposited, then everyone
 
 There are emissions for tracking things like pubkeys, fee changes, and accumulating stats (hopefully one day we can brag about how much off-chain ecomony was protected with this thing).
 
-- **ConfigCreated**
-- **ConfigUpdated**
-- **JudgeNominated**
-- **JudgeAccepted**
-- **EscrowCreated**
+### Config Created
 
-TODO: More, like deposit events, releases, returns, judgements.
+```rust
+pub struct ConfigCreated {
+    pub address: Pubkey, // the pubkey of the new Config PDA
+    pub treasury: Pubkey, // the pubkey of the treasury that receives taxes
+    pub judge: Pubkey, // the pubkey of the person/multisig that can judge escrows
+    pub tax: u16, // basis point fee per escrow
+    pub fee: u8, // percent fee for judgements
+    pub timestamp: i64, // when the shit happened lol fym document the timestamp
+}
+```
+
+### Config Updated
+
+```rust
+#[event]
+pub struct ConfigUpdated {
+    pub address: Pubkey, // the pubkey of the config pda being updated
+    pub treasury: Pubkey, // the treasury
+    pub pending_judge: Option<Pubkey>, // if this is set, it means the judge role is changing
+    pub tax: u16, // basis point fee per escrow
+    pub fee: u8, // percent fee for judgements
+    pub timestamp: i64,
+}
+```
+
+#### Judge Stuff happens here too
+
+```rust
+#[event]
+pub struct JudgeNominated {
+    pub address: Pubkey, // the pubkey of the config pda in question
+    pub pending_judge: Pubkey, // if this is set, there is definitely being a new judge
+    pub timestamp: i64,
+}
+
+#[event]
+pub struct JudgeAccepted {
+    pub address: Pubkey, // the pubkey of the config where this happened
+    pub old_judge: Pubkey, // cya bozo
+    pub new_judge: Pubkey, // welcome king
+    pub timestamp: i64,
+}
+```
+
+#### Escrow Created
+
+```rust
+pub struct EscrowCreated {
+    pub address: Pubkey, // pubkey of the new escrow (need this for every other function later)
+    pub payer: Pubkey, // the pubkey of the Payer role for the escrow. this is the person or multisig putting up coin
+    pub payee: Pubkey, // the pubkey of the Payee role for the escrow. this is the person or multisig expecting coin
+    pub amount: u64, // how many coins, in the smallest unit possible. Ie 5,000,000 for 5 USDC, 5,000,000,000 for 5 SOL.
+    pub token_mint: Option<Pubkey>, // if this is set, it's the pubkey of the mint account for the token. If not, this is a SOL contract.
+    pub timestamp: i64,
+}
+```
+
+#### Escrow Deposited
+
+```rust
+pub struct EscrowDeposited {
+    pub address: Pubkey, // pubkey of the escrow where the deposit happened
+    pub amount: u64, // how many coins got entered
+    pub token_mint: Option<Pubkey>, // if this is set, it's the pubkey of the mint account for the token. If not, this is a SOL contract.
+    pub timestamp: i64,
+}
+```
+
+#### Escrow Released
+
+```rust
+// (accrete these signals for dashboarding, like "Over $10bn protected" but live)
+pub struct EscrowReleased { // released means that Payer gave the money to Payee.
+    pub address: Pubkey, // pubkey of the escrow that just completed (it's gone forever now)
+    pub amount: u64, // how much money got paid out
+    pub tax_paid: u64, // how much tax was paid out
+    pub token_mint: Option<Pubkey>, // needed for computing dashboarding
+    pub timestamp: i64,
+}
+```
+
+#### Escrow Returned
+
+```rust
+// (accrete these signals for dashboarding, like "Over $10bn protected" but live)
+// values identical to EscrowReleased, but
+pub struct EscrowReturned { // Returned means Payee gave the money *back* to Payer.
+    pub address: Pubkey,
+    pub amount: u64,
+    pub tax_paid: u64,
+    pub token_mint: Option<Pubkey>,
+    pub timestamp: i64,
+}
+```
+
+#### Escrow Recovered
+
+```rust
+// (accrete these signals for dashboarding, like "Over $10bn protected" but live)
+// values identical to EscrowReleased, but
+pub struct EscrowRecovered { // recovered means Payer took their money back. Time locked function.
+    pub address: Pubkey,
+    pub amount: u64, // notice no tax_paid field. DAO is not paid for not judging on escrows.
+    pub token_mint: Option<Pubkey>,
+    pub timestamp: i64,
+}
+```
+
+#### Escrow Disputed
+
+```rust
+// the deal has broken, time to do hard work.
+// put these signals on dings if you are doing escrow services.
+pub struct EscrowDisputed {
+    pub address: Pubkey, // the pubkey of the escrow that needs judgement
+    pub payer: Pubkey,
+    pub payee: Pubkey,
+    pub disputed_by: Pubkey, // the person who disputed. could be payer, payee, or judge.
+    pub timestamp: i64,
+}
+```
+
+#### Escrow Judged
+
+```rust
+pub struct EscrowJudged {
+    pub address: Pubkey, // the escrow that was judged
+    pub winner: Pubkey, // the person who got paid
+    pub amount_awarded: u64, // how much they got
+    pub fee_collected: u64, // how much the judge took
+    pub token_mint: Option<Pubkey>,
+    pub timestamp: i64,
+}
+```
 
 ## License
 
